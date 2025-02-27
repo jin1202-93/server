@@ -281,6 +281,10 @@ def place_bid():
 def home():
     return "Auction Server is running!"
 
+@app.route("/healthz", methods=["GET"])
+def health_check():
+    return "OK", 200
+
 
 
 
