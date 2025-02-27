@@ -137,14 +137,16 @@ def retry_unsold_players():
     global auction_state
 
     if not auction_state["unsold_players"]:
-        return jsonify({"message": "유찰된 선수가 없습니다!"}), 400
+        response = jsonify({"message": "유찰된 선수가 없습니다!"}), 400
+    else:
+        auction_state["auction_queue"].extend(auction_state["unsold_players"])
+        auction_state["waiting_players"].extend(auction_state["unsold_players"])  # 🔹 추가
+        auction_state["unsold_players"] = []  # 유찰 목록 초기화
+        response = jsonify({"message": "유찰된 선수들이 다시 경매 목록에 추가되었습니다!"})
 
-    # ✅ 유찰된 선수 다시 경매 목록에 추가 (waiting_players도 함께 수정)
-    auction_state["auction_queue"].extend(auction_state["unsold_players"])
-    auction_state["waiting_players"].extend(auction_state["unsold_players"])  # 🔹 추가
-    auction_state["unsold_players"] = []  # 유찰 목록 초기화
+    response.headers["Content-Type"] = "application/json; charset=utf-8"
+    return response
 
-    return jsonify({"message": "유찰된 선수들이 다시 경매 목록에 추가되었습니다!"})
 
 
 
@@ -171,10 +173,13 @@ def start_auction():
 
     if auction_state["auction_queue"]:
         auction_state["current_player"] = auction_state["auction_queue"].pop(0)
+        response = jsonify({"message": "경매가 시작되었습니다!", "current_player": auction_state["current_player"]})
     else:
-        return jsonify({"message": "대기 선수가 없습니다. 경매를 시작할 수 없습니다."}), 400
+        response = jsonify({"message": "대기 선수가 없습니다. 경매를 시작할 수 없습니다."}), 400
 
-    return jsonify({"message": "경매가 시작되었습니다!", "current_player": auction_state["current_player"]})
+    response.headers["Content-Type"] = "application/json; charset=utf-8"
+    return response
+
 
 @app.route("/get_auction_status", methods=["GET"])
 def get_auction_status():
@@ -182,7 +187,7 @@ def get_auction_status():
     global auction_state
 
     if not auction_state or "teams" not in auction_state:
-        return jsonify({
+        response = jsonify({
             "message": "경매가 아직 시작되지 않았습니다.",
             "current_player": "경매 대기 중",
             "current_bid": 0,
@@ -193,12 +198,15 @@ def get_auction_status():
             "unsold_players": [],
             "logs": []
         })
+    else:
+        # ✅ 중복 제거된 로그를 포함하여 응답
+        unique_logs = list(dict.fromkeys(auction_state["logs"]))
 
-    # ✅ **이전과 동일한 로그가 전달되지 않도록 중복 방지**
-    last_log = auction_state["logs"][-1] if auction_state["logs"] else ""
-    unique_logs = list(dict.fromkeys(auction_state["logs"]))  # 중복 제거
+        response = jsonify({**auction_state, "logs": unique_logs})
 
-    return jsonify({**auction_state, "logs": unique_logs})
+    # ✅ UTF-8 인코딩 적용
+    response.headers["Content-Type"] = "application/json; charset=utf-8"
+    return response
 
 
 @app.route("/start_timer", methods=["POST"])
@@ -222,13 +230,13 @@ def reset_auction():
     """ 경매를 강제로 초기화하고 처음부터 다시 시작 """
     global auction_state, timer_running
 
-    # ✅ 현재 경매 강제 종료
     timer_running = False  # 기존 타이머 중지
-    auction_state = {
-        "logs": []  # ✅ 로그 초기화 (이전 로그 삭제)
-    }
+    auction_state = {"logs": []}  # ✅ 로그 초기화
 
-    return jsonify({"message": "✔ 경매가 초기화되었습니다. '경매 시작' 버튼을 눌러주세요!", "logs": auction_state["logs"]})
+    response = jsonify({"message": "✔ 경매가 초기화되었습니다. '경매 시작' 버튼을 눌러주세요!", "logs": auction_state["logs"]})
+    response.headers["Content-Type"] = "application/json; charset=utf-8"
+    return response
+
 
 @app.route("/place_bid", methods=["POST"])
 def place_bid():
@@ -238,38 +246,34 @@ def place_bid():
     bid_amount = data.get("bid")
 
     if not timer_running:
-        return jsonify({"error": "타이머가 시작되지 않았습니다. '시작' 버튼을 눌러주세요!"}), 400
+        response = jsonify({"error": "타이머가 시작되지 않았습니다. '시작' 버튼을 눌러주세요!"}), 400
+    elif team_name not in auction_state["teams"]:
+        response = jsonify({"error": "잘못된 팀 이름"}), 400
+    elif auction_state["teams"][team_name]["points"] < bid_amount:
+        response = jsonify({"error": "잔여 포인트 부족"}), 400
+    elif bid_amount <= auction_state["current_bid"]:
+        response = jsonify({"error": "현재 입찰가보다 높아야 합니다."}), 400
+    elif len(auction_state["teams"][team_name]["members"]) >= 4:
+        response = jsonify({"error": "이 팀은 이미 4명을 영입했습니다!"}), 400
+    elif auction_state["highest_bidder"] == team_name:
+        response = jsonify({"error": "같은 팀은 연속으로 입찰할 수 없습니다!"}), 400
+    else:
+        if auction_state["highest_bidder"]:
+            previous_bidder = auction_state["highest_bidder"]
+            auction_state["teams"][previous_bidder]["points"] += auction_state["current_bid"]
 
-    if team_name not in auction_state["teams"]:
-        return jsonify({"error": "잘못된 팀 이름"}), 400
+        auction_state["current_bid"] = bid_amount
+        auction_state["highest_bidder"] = team_name
+        auction_state["teams"][team_name]["points"] -= bid_amount
+        auction_state["remaining_time"] = 10
 
-    if auction_state["teams"][team_name]["points"] < bid_amount:
-        return jsonify({"error": "잔여 포인트 부족"}), 400
+        last_bid_log = f"✔ ({team_name}) 팀이 {bid_amount} 포인트로 입찰했습니다."
+        auction_state["logs"].append(last_bid_log)
 
-    if bid_amount <= auction_state["current_bid"]:
-        return jsonify({"error": "현재 입찰가보다 높아야 합니다."}), 400
+        response = jsonify({"message": "입찰 성공", "new_bid": auction_state["current_bid"], "logs": [last_bid_log]})
 
-    if len(auction_state["teams"][team_name]["members"]) >= 4:
-        return jsonify({"error": "이 팀은 이미 4명을 영입했습니다!"}), 400
-
-    if auction_state["highest_bidder"] == team_name:
-        return jsonify({"error": "같은 팀은 연속으로 입찰할 수 없습니다!"}), 400
-
-    if auction_state["highest_bidder"]:
-        previous_bidder = auction_state["highest_bidder"]
-        auction_state["teams"][previous_bidder]["points"] += auction_state["current_bid"]
-
-    auction_state["current_bid"] = bid_amount
-    auction_state["highest_bidder"] = team_name
-    auction_state["teams"][team_name]["points"] -= bid_amount
-    auction_state["remaining_time"] = 10
-
-    # ✅ **가장 최근의 입찰 로그만 저장**
-    last_bid_log = f"✔ ({team_name}) 팀이 {bid_amount} 포인트로 입찰했습니다."
-    auction_state["logs"].append(last_bid_log)
-
-    return jsonify({"message": "입찰 성공", "new_bid": auction_state["current_bid"], "logs": [last_bid_log]})
-
+    response.headers["Content-Type"] = "application/json; charset=utf-8"
+    return response
 
 
 
@@ -280,7 +284,8 @@ def home():
 
 
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))  # Render에서 제공하는 PORT 사용
-    app.run(host="0.0.0.0", port=port)
 
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))  # Render가 할당한 포트 사용
+    app.run(host="0.0.0.0", port=port)
