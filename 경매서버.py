@@ -273,7 +273,9 @@ def place_bid():
 
 
 
-
+@app.route("/")
+def home():
+    return "Auction Server is running!"
 
 
 
