@@ -286,6 +286,8 @@ def home():
 
 
 
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))  # Render가 할당한 포트 사용
+    port = int(os.environ.get("PORT", 8080))  # Render가 자동으로 할당한 포트 사용
     app.run(host="0.0.0.0", port=port)
+
